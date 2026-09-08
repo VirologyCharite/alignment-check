@@ -1,0 +1,19 @@
+[project]
+name = "alignment-check"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "terrycojones", email = "tcj25@cam.ac.uk" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "prseq>=0.0.38",
+]
+
+[project.scripts]
+alignment-check = "alignment_check:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
