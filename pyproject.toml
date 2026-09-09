@@ -1,19 +1,32 @@
 [project]
 name = "alignment-check"
-version = "0.1.0"
-description = "Add your description here"
+dynamic = ["version"]
+description = "Assess a multiple sequence alignment and write an HTML report of its errors, anomalies, and general information."
 readme = "README.md"
 authors = [
-    { name = "terrycojones", email = "tcj25@cam.ac.uk" }
+    { name = "terrycojones", email = "terence.jones@charite.de" }
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "plotly>=7.0.0",
     "prseq>=0.0.38",
 ]
 
 [project.scripts]
-alignment-check = "alignment_check:main"
+alignment-check = "alignment_check.cli.alignment_check:main"
 
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
-build-backend = "uv_build"
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alignment_check"]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0.0",
+    "pytest>=9.1.1",
+]
