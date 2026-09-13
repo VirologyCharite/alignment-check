@@ -88,6 +88,56 @@ per-site nucleotide ambiguity (nucleotide alignments only), per-site
 homogeneity, and (with `--n2`) the distribution of pairwise sequence
 identities.
 
+## `compare-alignments`
+
+Compares two FASTA alignment files and writes an HTML report of the
+differences:
+
+```sh
+compare-alignments alignment_a.fasta alignment_b.fasta -o compare_report.html
+```
+
+| Option | Description |
+| --- | --- |
+| `-o`, `--output PATH` | Where to write the HTML report (default: `compare_alignments_report.html`). |
+| `--gap-chars CHARS` | Characters treated as alignment gaps (default: `-.?`). |
+| `--exclude-ungapped-sites` | Compress the gap-position images (see below) down to just columns with a gap in some shown sequence, instead of showing every column (the default). Produces much smaller images, but drops the ruler, since compressed column positions no longer increase evenly. |
+
+**Basic comparison tests** (always runs): sequence counts, alignment widths,
+whether the files are exactly identical, whether the two files contain
+the same sequence IDs (and if not, which ones differ), whether shared
+IDs appear in the same relative order, whether each shared sequence's
+actual (ungapped, case-insensitive) content matches between the two
+files, and — checked independently per file — whether either alignment
+has a column that's a gap in every one of its sequences (skipped for a
+file whose own sequences aren't all the same length).
+
+**Gap-pattern comparison** (runs only for sequences common to both
+files with matching content — the intended use case is the same
+sequences aligned two different ways, so any remaining difference is
+necessarily about gap placement, not sequence content):
+
+- A per-sequence table and scatter plot of *internal* gap count (gaps
+  strictly between a sequence's first and last residue, so padding
+  added just to match the file's overall width doesn't count) in A vs.
+  B.
+- Stacked black-on-white images of gap positions for A and B. By
+  default every column is shown, each with a ruler above it labeling
+  real (1-based) alignment column numbers, and the two images'
+  horizontal scroll positions are kept in sync (scrolling one scrolls
+  the other the same amount). Images are embedded at native resolution
+  (one pixel per site/sequence, no scaling) and left to scroll rather
+  than shrink. Pass `--exclude-ungapped-sites` to compress out columns
+  with no gap in any shown sequence instead, for a much smaller image —
+  the two images are then no longer comparable position-for-position
+  (each is compressed independently), and since the shown columns'
+  real positions no longer increase evenly, the ruler is omitted
+  rather than showing misleadingly uneven tick spacing.
+- A line plot of the per-residue difference in "gaps preceding this
+  residue" between A and B, one line per common sequence (baseline-
+  adjusted so leading-gap padding doesn't shift the curve) — shows not
+  just how much more one alignment gaps a sequence, but *where*.
+
 ## Development
 
 ```sh
@@ -97,9 +147,11 @@ uv run pytest
 
 Library code lives under `src/alignment_check/`, one check or info
 function per file (`checks/` for errors and anomalies, `info/` for
-general information and plots), each with a matching test file under
-`tests/`. The CLI script (`src/alignment_check/cli/alignment_check.py`)
-is the only place that wires these functions together.
+general information and plots, `compare/` for the two-alignment
+comparisons used by `compare-alignments`), each with a matching test
+file under `tests/`. The two CLI scripts, under
+`src/alignment_check/cli/`, are the only places that wire these
+functions together.
 
 ### Pre-commit hook
 

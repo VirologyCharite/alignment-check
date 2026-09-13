@@ -8,12 +8,14 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "pillow>=12.3.0",
     "plotly>=7.0.0",
     "prseq>=0.0.38",
 ]
 
 [project.scripts]
 alignment-check = "alignment_check.cli.alignment_check:main"
+compare-alignments = "alignment_check.cli.compare_alignments:main"
 
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning"]
