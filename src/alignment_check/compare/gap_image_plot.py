@@ -9,9 +9,14 @@ a sharp black/white pattern into misleading colored banding. Building an
 actual bitmap, one pixel per site/sequence with no interpolation or
 scaling, avoids that entirely: images are embedded at native resolution
 and left to scroll rather than shrink, so nothing gets blurred or
-invented. The two images' horizontal scroll positions are kept in sync
-(via the script at the end of `render_gap_image_plot`'s output) so
-scrolling one scrolls the other the same amount.
+invented.
+
+For a very wide alignment, `window_size` splits each image into
+consecutive column chunks, each shown as an A-over-B pair; all the pairs
+are stacked in one vertically-scrollable container. Within each pair,
+the two images' horizontal scroll positions are kept in sync with each
+other (but not with other pairs' scroll position) -- see
+`_SYNC_SCROLL_SCRIPT`.
 
 The ruler above each image labels ticks with the *real* 1-based
 alignment column number behind each shown pixel, via `columns` in the
@@ -26,6 +31,8 @@ import io
 
 from PIL import Image, ImageDraw
 
+from alignment_check.compare.gap_image import chunk_gap_image_rows
+
 _DIVIDER_COLOR = (220, 0, 0)
 
 _RULER_HEIGHT = 14
@@ -39,9 +46,14 @@ _STYLE = """
 .gap-image-legend { font-size: 0.85rem; color: #444; margin-bottom: 0.75rem; }
 .gap-image-legend .swatch { display: inline-block; width: 0.9em; height: 0.9em;
     vertical-align: -0.1em; border: 1px solid #999; margin-right: 0.3em; }
+.gap-image-chunks { max-height: 70vh; overflow-y: auto; border: 1px solid #ddd;
+    padding: 0.75rem; }
+.gap-image-chunk { margin-bottom: 1.5rem; }
+.gap-image-chunk:last-child { margin-bottom: 0; }
 .gap-image-caption { font-size: 0.9rem; color: #444; margin: 0 0 0.5rem 0; }
 .gap-image-wrap { overflow: auto; border: 1px solid #ccc; max-width: 100%;
-    margin-bottom: 2rem; }
+    margin-bottom: 0.75rem; }
+.gap-image-wrap:last-child { margin-bottom: 0; }
 .gap-image-wrap img { display: block; image-rendering: pixelated;
     image-rendering: crisp-edges; }
 .gap-image-ruler { position: sticky; top: 0; background: #fff; z-index: 1;
@@ -51,18 +63,25 @@ _STYLE = """
 
 _SYNC_SCROLL_SCRIPT = """
 (function() {
-  var wraps = Array.prototype.slice.call(
+  var groups = {};
+  Array.prototype.slice.call(
     document.querySelectorAll('[data-gap-scroll]')
-  );
-  var syncing = null;
-  wraps.forEach(function(el) {
-    el.addEventListener('scroll', function() {
-      if (syncing && syncing !== el) return;
-      syncing = el;
-      wraps.forEach(function(other) {
-        if (other !== el) other.scrollLeft = el.scrollLeft;
+  ).forEach(function(el) {
+    var key = el.getAttribute('data-gap-scroll');
+    (groups[key] = groups[key] || []).push(el);
+  });
+  Object.keys(groups).forEach(function(key) {
+    var wraps = groups[key];
+    var syncing = null;
+    wraps.forEach(function(el) {
+      el.addEventListener('scroll', function() {
+        if (syncing && syncing !== el) return;
+        syncing = el;
+        wraps.forEach(function(other) {
+          if (other !== el) other.scrollLeft = el.scrollLeft;
+        });
+        syncing = null;
       });
-      syncing = null;
     });
   });
 })();
@@ -177,8 +196,24 @@ def _image_to_data_uri(image: Image.Image) -> str:
     return f"data:image/png;base64,{encoded}"
 
 
+def _empty_chunk(image_data: dict[str, object]) -> dict[str, object]:
+    """A zero-column placeholder chunk, for when one image has run out
+    of chunks before its paired image has.
+    """
+    return {
+        "grid": [[] for _ in image_data["row_ids"]],
+        "row_ids": image_data["row_ids"],
+        "columns": [],
+        "num_columns_shown": 0,
+        "num_columns_total": image_data["num_columns_total"],
+    }
+
+
 def _render_one(
-    image_data: dict[str, object], title: str, divider_after_row: int | None
+    image_data: dict[str, object],
+    title: str,
+    divider_after_row: int | None,
+    scroll_group: str,
 ) -> str:
     image = _grid_to_image(image_data["grid"], divider_after_row)
     data_uri = _image_to_data_uri(image)
@@ -200,7 +235,7 @@ def _render_one(
     ruler_html = f'<div class="gap-image-ruler">{ruler}</div>' if ruler else ""
     return (
         f'<p class="gap-image-caption">{caption}</p>'
-        '<div class="gap-image-wrap" data-gap-scroll>'
+        f'<div class="gap-image-wrap" data-gap-scroll="{scroll_group}">'
         f"{ruler_html}"
         f'<img src="{data_uri}" width="{image.width}" height="{image.height}" '
         f'alt="{html.escape(title)} gap positions">'
@@ -215,6 +250,7 @@ def render_gap_image_plot(
     title_b: str = "Alignment B",
     divider_after_row_a: int | None = None,
     divider_after_row_b: int | None = None,
+    window_size: int | None = None,
 ) -> str:
     """Render two gap-position grids as stacked, ruler-labeled images.
 
@@ -222,8 +258,12 @@ def render_gap_image_plot(
     the common-sequence rows use the same order in both images, so a
     given row index refers to the same sequence in each, up to
     `divider_after_row_*`. Images are embedded at native resolution and
-    scroll rather than shrink; the two images' horizontal scroll
-    positions are kept in sync with each other.
+    scroll rather than shrink.
+
+    If `window_size` splits the images into more than one chunk, each
+    chunk gets its own A-over-B pair (only that pair's two images have
+    their horizontal scroll kept in sync with each other), and all the
+    pairs are stacked inside one vertically-scrollable container.
 
     Args:
         image_a: The return value of `gap_image.compute_gap_image_rows`
@@ -236,10 +276,16 @@ def render_gap_image_plot(
         divider_after_row_a: Row index (0-based count) after which to
             draw the red divider in image A, or None for no divider.
         divider_after_row_b: Same, for image B.
+        window_size: Maximum shown columns per chunk. None means one
+            chunk covering everything (no splitting).
 
     Returns:
-        An HTML fragment holding both images, stacked vertically.
+        An HTML fragment holding the chunked pairs of images.
     """
+    chunks_a = chunk_gap_image_rows(image_a, window_size)
+    chunks_b = chunk_gap_image_rows(image_b, window_size)
+    num_chunks = max(len(chunks_a), len(chunks_b))
+
     legend = (
         '<div class="gap-image-legend">'
         '<span class="swatch" style="background:#000;"></span>gap &nbsp;'
@@ -247,10 +293,25 @@ def render_gap_image_plot(
         '<span class="swatch" style="background:rgb(220,0,0);"></span>'
         "divider between common and file-specific rows</div>"
     )
+
+    chunk_blocks = []
+    for i in range(num_chunks):
+        chunk_a = chunks_a[i] if i < len(chunks_a) else _empty_chunk(image_a)
+        chunk_b = chunks_b[i] if i < len(chunks_b) else _empty_chunk(image_b)
+        suffix = f" (chunk {i + 1} of {num_chunks})" if num_chunks > 1 else ""
+        group = f"chunk-{i}"
+        chunk_blocks.append(
+            '<div class="gap-image-chunk">'
+            f"{_render_one(chunk_a, title_a + suffix, divider_after_row_a, group)}"
+            f"{_render_one(chunk_b, title_b + suffix, divider_after_row_b, group)}"
+            "</div>"
+        )
+
     return (
         f"<style>{_STYLE}</style>"
         f"{legend}"
-        f"{_render_one(image_a, title_a, divider_after_row_a)}"
-        f"{_render_one(image_b, title_b, divider_after_row_b)}"
+        '<div class="gap-image-chunks">'
+        f"{''.join(chunk_blocks)}"
+        "</div>"
         f"<script>{_SYNC_SCROLL_SCRIPT}</script>"
     )

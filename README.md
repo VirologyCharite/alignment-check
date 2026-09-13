@@ -88,20 +88,30 @@ per-site nucleotide ambiguity (nucleotide alignments only), per-site
 homogeneity, and (with `--n2`) the distribution of pairwise sequence
 identities.
 
-## `compare-alignments`
+## `alignment-compare`
 
 Compares two FASTA alignment files and writes an HTML report of the
 differences:
 
 ```sh
-compare-alignments alignment_a.fasta alignment_b.fasta -o compare_report.html
+alignment-compare alignment_a.fasta alignment_b.fasta -o compare_report.html
 ```
 
 | Option | Description |
 | --- | --- |
-| `-o`, `--output PATH` | Where to write the HTML report (default: `compare_alignments_report.html`). |
+| `-o`, `--output PATH` | Where to write the HTML report (default: `alignment_compare_report.html`). |
 | `--gap-chars CHARS` | Characters treated as alignment gaps (default: `-.?`). |
 | `--exclude-ungapped-sites` | Compress the gap-position images (see below) down to just columns with a gap in some shown sequence, instead of showing every column (the default). Produces much smaller images, but drops the ruler, since compressed column positions no longer increase evenly. |
+| `--gap-image-window-size N` | Split each gap-position image into consecutive chunks of at most N shown columns, each chunk its own A-over-B pair, stacked in one vertically-scrollable area. Default: one pair covering the whole image. |
+| `--include-igcps-plot` | Include the internal gap count per sequence scatter plot. Off by default. |
+| `--include-pigd-plot` | Include the per-residue internal gap-count difference plot. Off by default: it embeds one point per residue, which can make the report very large for long sequences. |
+
+Each input file must itself be a valid alignment (at least one
+sequence, all of that file's own sequences the same length) — unlike a
+missing or non-FASTA file (which still produces a report describing the
+problem), a structurally invalid alignment makes `alignment-compare`
+print an error to stderr and exit with a non-zero status, without
+writing a report.
 
 **Basic comparison tests** (always runs): sequence counts, alignment widths,
 whether the files are exactly identical, whether the two files contain
@@ -132,7 +142,12 @@ necessarily about gap placement, not sequence content):
   the two images are then no longer comparable position-for-position
   (each is compressed independently), and since the shown columns'
   real positions no longer increase evenly, the ruler is omitted
-  rather than showing misleadingly uneven tick spacing.
+  rather than showing misleadingly uneven tick spacing. For a very wide
+  alignment, `--gap-image-window-size N` splits the images into
+  consecutive N-column chunks, each its own A-over-B pair (with its own
+  independently-synced horizontal scroll), all stacked in one
+  vertically-scrollable area — this avoids relying on a browser's
+  ability to render a single, arbitrarily wide image.
 - A line plot of the per-residue difference in "gaps preceding this
   residue" between A and B, one line per common sequence (baseline-
   adjusted so leading-gap padding doesn't shift the curve) — shows not
@@ -148,7 +163,7 @@ uv run pytest
 Library code lives under `src/alignment_check/`, one check or info
 function per file (`checks/` for errors and anomalies, `info/` for
 general information and plots, `compare/` for the two-alignment
-comparisons used by `compare-alignments`), each with a matching test
+comparisons used by `alignment-compare`), each with a matching test
 file under `tests/`. The two CLI scripts, under
 `src/alignment_check/cli/`, are the only places that wire these
 functions together.

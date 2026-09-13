@@ -69,3 +69,41 @@ def compute_gap_image_rows(
         "num_columns_shown": len(columns),
         "num_columns_total": width,
     }
+
+
+def chunk_gap_image_rows(
+    image_data: dict[str, object], window_size: int | None
+) -> list[dict[str, object]]:
+    """Split one image's shown columns into consecutive, same-sized windows.
+
+    Rows (`row_ids`) are identical in every chunk; only which columns of
+    `grid`/`columns` each chunk covers differs.
+
+    Args:
+        image_data: The return value of `compute_gap_image_rows`.
+        window_size: Maximum number of shown columns per chunk. None (or
+            a value at least as large as the image) means one chunk
+            covering everything -- i.e. no splitting.
+
+    Returns:
+        The chunks, in column order. Always at least one, even for a
+        zero-column image (matching `compute_gap_image_rows`'s own
+        handling of that case).
+    """
+    columns = image_data["columns"]
+    total = len(columns)
+
+    if not window_size or window_size >= total:
+        return [image_data]
+
+    grid = image_data["grid"]
+    return [
+        {
+            "grid": [row[start : start + window_size] for row in grid],
+            "row_ids": image_data["row_ids"],
+            "columns": columns[start : start + window_size],
+            "num_columns_shown": min(window_size, total - start),
+            "num_columns_total": image_data["num_columns_total"],
+        }
+        for start in range(0, total, window_size)
+    ]

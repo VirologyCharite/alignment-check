@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from alignment_check.cli.compare_alignments import main
+import pytest
+
+from alignment_check.cli.alignment_compare import main
 
 
 def _write_fasta(path: Path, records: dict[str, str]) -> None:
@@ -11,8 +13,8 @@ def _write_fasta(path: Path, records: dict[str, str]) -> None:
 def test_main_writes_report_for_two_valid_alignments(tmp_path: Path) -> None:
     file_a = tmp_path / "a.fasta"
     file_b = tmp_path / "b.fasta"
-    _write_fasta(file_a, {"s1": "--AC-GT", "s2": "ACGTACGT"})
-    _write_fasta(file_b, {"s1": "AC--GT", "s2": "ACGTACGT"})
+    _write_fasta(file_a, {"s1": "--AC-GT-", "s2": "ACGTACGT"})
+    _write_fasta(file_b, {"s1": "AC--GT--", "s2": "ACGTACGT"})
     output = tmp_path / "report.html"
 
     main([str(file_a), str(file_b), "-o", str(output)])
@@ -21,11 +23,49 @@ def test_main_writes_report_for_two_valid_alignments(tmp_path: Path) -> None:
     assert "Number of sequences: A=2, B=2" in html
     assert "Same sequence IDs (2 in common)" in html
     assert "Gap positions" in html
-    assert "Internal gap count per sequence" in html
-    assert "Per-residue internal gap-count difference" in html
+    # Off by default.
+    assert "Internal gap count per sequence" not in html
+    assert "Per-residue internal gap-count difference" not in html
     assert "<td>s1</td>" in html
     assert f"A: {file_a.resolve()} (a.fasta)" in html
     assert f"B: {file_b.resolve()} (b.fasta)" in html
+
+
+def test_main_include_igcps_and_pigd_plot_flags(tmp_path: Path) -> None:
+    file_a = tmp_path / "a.fasta"
+    file_b = tmp_path / "b.fasta"
+    _write_fasta(file_a, {"s1": "--AC-GT-", "s2": "ACGTACGT"})
+    _write_fasta(file_b, {"s1": "AC--GT--", "s2": "ACGTACGT"})
+    output = tmp_path / "report.html"
+
+    main(
+        [
+            str(file_a),
+            str(file_b),
+            "-o",
+            str(output),
+            "--include-igcps-plot",
+            "--include-pigd-plot",
+        ]
+    )
+
+    html = output.read_text()
+    assert "Internal gap count per sequence" in html
+    assert "Per-residue internal gap-count difference" in html
+
+
+def test_main_include_pigd_plot_alone_still_embeds_plotlyjs(tmp_path: Path) -> None:
+    file_a = tmp_path / "a.fasta"
+    file_b = tmp_path / "b.fasta"
+    _write_fasta(file_a, {"s1": "--AC-GT"})
+    _write_fasta(file_b, {"s1": "AC--GT"})
+    output = tmp_path / "report.html"
+
+    main([str(file_a), str(file_b), "-o", str(output), "--include-pigd-plot"])
+
+    html = output.read_text()
+    assert "Per-residue internal gap-count difference" in html
+    assert "Plotly.newPlot" in html
 
 
 def test_main_uses_shortest_distinguishing_label_for_same_basename(
@@ -117,21 +157,55 @@ def test_main_reports_width_and_difference(tmp_path: Path) -> None:
     assert "Alignment width: A=10, B=8 (difference: +2)" in html
 
 
-def test_main_reports_width_without_difference_when_inconsistent(
+def test_main_exits_with_error_when_a_files_lengths_are_inconsistent(
     tmp_path: Path,
 ) -> None:
     file_a = tmp_path / "a.fasta"
     file_b = tmp_path / "b.fasta"
-    # file_a's own sequences aren't even the same length as each other.
+    # file_a's own sequences aren't even the same length as each other,
+    # which every later computation assumes -- this must be rejected
+    # up front rather than crash partway through.
     _write_fasta(file_a, {"s1": "AAAAAAA", "s2": "AAAAAAAA"})
     _write_fasta(file_b, {"s1": "AAAAAAAA", "s2": "AAAAAAAA"})
     output = tmp_path / "report.html"
 
-    main([str(file_a), str(file_b), "-o", str(output)])
+    with pytest.raises(SystemExit) as excinfo:
+        main([str(file_a), str(file_b), "-o", str(output)])
 
-    html = output.read_text()
-    assert "Alignment width: A=varies: [7, 8], B=8" in html
-    assert "(difference:" not in html
+    assert excinfo.value.code == 1
+    assert not output.exists()
+
+
+def test_main_exits_with_error_for_empty_alignment(tmp_path: Path) -> None:
+    file_a = tmp_path / "a.fasta"
+    file_b = tmp_path / "b.fasta"
+    file_a.write_text("")
+    _write_fasta(file_b, {"s1": "ACGT"})
+    output = tmp_path / "report.html"
+
+    with pytest.raises(SystemExit) as excinfo:
+        main([str(file_a), str(file_b), "-o", str(output)])
+
+    assert excinfo.value.code == 1
+    assert not output.exists()
+
+
+def test_main_reports_both_files_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    file_a = tmp_path / "a.fasta"
+    file_b = tmp_path / "b.fasta"
+    _write_fasta(file_a, {"s1": "AAA", "s2": "AAAA"})
+    file_b.write_text("")
+    output = tmp_path / "report.html"
+
+    with pytest.raises(SystemExit):
+        main([str(file_a), str(file_b), "-o", str(output)])
+
+    stderr = capsys.readouterr().err
+    assert "A's sequences are not all the same length" in stderr
+    assert "B contains no sequences" in stderr
+    assert not output.exists()
 
 
 def test_main_identical_files(tmp_path: Path) -> None:
@@ -194,17 +268,44 @@ def test_main_flags_gap_only_column(tmp_path: Path) -> None:
     assert "1 column(s): [2]" in html
 
 
-def test_main_skips_gap_only_check_when_file_lengths_inconsistent(
-    tmp_path: Path,
-) -> None:
+
+
+def test_main_gap_image_window_size_splits_into_chunks(tmp_path: Path) -> None:
     file_a = tmp_path / "a.fasta"
     file_b = tmp_path / "b.fasta"
-    _write_fasta(file_a, {"s1": "ACGT", "s2": "ACG"})  # inconsistent lengths
-    _write_fasta(file_b, {"s1": "ACGT", "s2": "ACGA"})
+    _write_fasta(file_a, {"s1": "ACGTACGTAC"})
+    _write_fasta(file_b, {"s1": "ACGTACGTAC"})
     output = tmp_path / "report.html"
 
-    main([str(file_a), str(file_b), "-o", str(output)])
+    main(
+        [
+            str(file_a),
+            str(file_b),
+            "-o",
+            str(output),
+            "--gap-image-window-size",
+            "4",
+        ]
+    )
 
     html = output.read_text()
-    assert "No gap-only columns in A" not in html
-    assert "No gap-only columns in B" in html
+    # 10 columns / window 4 -> 3 chunks.
+    assert html.count('class="gap-image-chunk"') == 3
+    assert "(chunk 1 of 3)" in html
+
+
+def test_main_gap_image_window_size_must_be_positive(tmp_path: Path) -> None:
+    file_a = tmp_path / "a.fasta"
+    file_b = tmp_path / "b.fasta"
+    _write_fasta(file_a, {"s1": "ACGT"})
+    _write_fasta(file_b, {"s1": "ACGT"})
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                str(file_a),
+                str(file_b),
+                "--gap-image-window-size",
+                "0",
+            ]
+        )

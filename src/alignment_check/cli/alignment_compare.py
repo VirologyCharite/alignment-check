@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 
 from alignment_check.alphabet import DEFAULT_GAP_CHARS
+from alignment_check.checks.empty_alignment import check_empty_alignment
+from alignment_check.checks.equal_lengths import check_equal_lengths
 from alignment_check.checks.gap_only_columns import check_gap_only_columns
 from alignment_check.compare.alignment_widths import compare_alignment_widths
 from alignment_check.compare.compare_report import render_compare_report
@@ -32,13 +34,17 @@ from alignment_check.compare.preceding_gap_diff_plot import (
 from alignment_check.compare.sequence_identity import (
     compare_common_sequence_identity,
 )
-from alignment_check.exceptions import AlignmentFileNotFoundError, NotFastaError
+from alignment_check.exceptions import (
+    AlignmentFileNotFoundError,
+    InvalidAlignmentError,
+    NotFastaError,
+)
 from alignment_check.loader import load_sequences
 from alignment_check.sequence import Sequence
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
-    """Parse command-line arguments for the `compare-alignments` script."""
+    """Parse command-line arguments for the `alignment-compare` script."""
     parser = argparse.ArgumentParser(
         description="Compare two multiple sequence alignments (FASTA) and "
         "write an HTML report of their differences."
@@ -48,7 +54,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "-o",
         "--output",
-        default="compare_alignments_report.html",
+        default="alignment_compare_report.html",
         help="Path to write the HTML report to (default: %(default)s).",
     )
     parser.add_argument(
@@ -65,7 +71,33 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "ruler offset on each image is then omitted, since the shown "
         "columns' real positions no longer increase evenly.",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--include-igcps-plot",
+        action="store_true",
+        help="Include the internal gap count per sequence scatter plot. "
+        "Off by default.",
+    )
+    parser.add_argument(
+        "--include-pigd-plot",
+        action="store_true",
+        help="Include the per-residue internal gap-count difference plot "
+        "(one line per common sequence). Off by default: it embeds one "
+        "point per residue, which can make the report very large for "
+        "long sequences.",
+    )
+    parser.add_argument(
+        "--gap-image-window-size",
+        type=int,
+        metavar="N",
+        help="Split each gap-position image into consecutive chunks of "
+        "at most N shown columns, each chunk shown as its own A-over-B "
+        "pair, with all the pairs stacked in one vertically-scrollable "
+        "area. Default: one pair covering the whole image.",
+    )
+    args = parser.parse_args(argv)
+    if args.gap_image_window_size is not None and args.gap_image_window_size <= 0:
+        parser.error("--gap-image-window-size must be a positive integer")
+    return args
 
 
 def _try_load(path: str) -> tuple[list[Sequence] | None, str | None]:
@@ -75,32 +107,48 @@ def _try_load(path: str) -> tuple[list[Sequence] | None, str | None]:
         return None, str(error)
 
 
+def _validate_alignment(sequences: list[Sequence], label: str) -> None:
+    """Raise InvalidAlignmentError if `sequences` isn't a usable alignment.
+
+    Every later computation assumes an alignment's own sequences are all
+    the same length; this is the one gate all of them rely on.
+
+    Args:
+        sequences: The sequences read from one input file.
+        label: "A" or "B", for the error message.
+
+    Raises:
+        InvalidAlignmentError: If `sequences` is empty, or its sequences
+            aren't all the same length.
+    """
+    if check_empty_alignment(sequences)["empty"]:
+        raise InvalidAlignmentError(f"{label} contains no sequences.")
+    lengths = check_equal_lengths(sequences)
+    if not lengths["consistent"]:
+        raise InvalidAlignmentError(
+            f"{label}'s sequences are not all the same length "
+            f"(lengths found: {lengths['unique_lengths']})."
+        )
+
+
 def _ids_detail(ids: list[str]) -> str:
     return ", ".join(html.escape(id_) for id_ in ids) if ids else ""
 
 
-def _format_width(widths: list[int]) -> str:
-    return str(widths[0]) if len(widths) == 1 else f"varies: {widths}"
-
-
 def _format_width_comparison(widths_a: list[int], widths_b: list[int]) -> str:
-    line = f"Alignment width: A={_format_width(widths_a)}, B={_format_width(widths_b)}"
-    if len(widths_a) == 1 and len(widths_b) == 1:
-        line += f" (difference: {widths_a[0] - widths_b[0]:+d})"
-    return line
+    # By the time this runs, main() has already required each file's own
+    # sequences to be a single consistent length (see _validate_alignment).
+    width_a, width_b = widths_a[0], widths_b[0]
+    return (
+        f"Alignment width: A={width_a}, B={width_b} "
+        f"(difference: {width_a - width_b:+d})"
+    )
 
 
 def _gap_only_columns_item(
-    sequences: list[Sequence], widths: list[int], label: str, gap_chars: str
-) -> dict[str, object] | None:
-    """Build a tier1 item flagging gap-only columns in one file.
-
-    Returns None if the file's own sequences aren't all the same
-    length (gap_only_columns needs a consistent width to check), since
-    that's already reported separately by the width check.
-    """
-    if len(widths) != 1:
-        return None
+    sequences: list[Sequence], label: str, gap_chars: str
+) -> dict[str, object]:
+    """Build a tier1 item flagging gap-only columns in one file."""
     columns = check_gap_only_columns(sequences, gap_chars)["columns"]
     return {
         "failed": bool(columns),
@@ -182,13 +230,10 @@ def build_results(
             "detail_html": _ids_detail(identity["mismatched_ids"]),
         },
     ]
-    for sequences, file_widths, label in (
-        (sequences_a, widths["widths_a"], "A"),
-        (sequences_b, widths["widths_b"], "B"),
-    ):
-        item = _gap_only_columns_item(sequences, file_widths, label, args.gap_chars)
-        if item is not None:
-            tier1_items.append(item)
+    for sequences, label in ((sequences_a, "A"), (sequences_b, "B")):
+        tier1_items.append(
+            _gap_only_columns_item(sequences, label, args.gap_chars)
+        )
 
     results: dict[str, object] = {
         "name_a": name_a,
@@ -242,11 +287,7 @@ def build_results(
     image_b = compute_gap_image_rows(
         sequences_b, row_order_b, args.gap_chars, include_ungapped_sites
     )
-    diffs = compare_preceding_gap_diffs(
-        sequences_a, sequences_b, usable_ids, args.gap_chars
-    )
-
-    results["plots"] = [
+    plots = [
         {
             "title": "Gap positions",
             "html": render_gap_image_plot(
@@ -256,22 +297,44 @@ def build_results(
                 name_b,
                 divider_after_row_a,
                 divider_after_row_b,
+                args.gap_image_window_size,
             ),
         },
-        {
-            "title": "Internal gap count per sequence",
-            "html": render_gap_count_scatter_plot(gap_counts, include_plotlyjs=True),
-        },
-        {
-            "title": "Per-residue internal gap-count difference",
-            "html": render_preceding_gap_diff_plot(diffs),
-        },
     ]
+    # Whichever of these two Plotly plots is included first embeds the
+    # plotly.js library; the other (if also included) reuses it.
+    plotly_embedded = False
+
+    if args.include_igcps_plot:
+        plots.append(
+            {
+                "title": "Internal gap count per sequence",
+                "html": render_gap_count_scatter_plot(
+                    gap_counts, include_plotlyjs=True
+                ),
+            }
+        )
+        plotly_embedded = True
+
+    if args.include_pigd_plot:
+        diffs = compare_preceding_gap_diffs(
+            sequences_a, sequences_b, usable_ids, args.gap_chars
+        )
+        plots.append(
+            {
+                "title": "Per-residue internal gap-count difference",
+                "html": render_preceding_gap_diff_plot(
+                    diffs, include_plotlyjs=not plotly_embedded
+                ),
+            }
+        )
+
+    results["plots"] = plots
     return results
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Entry point for the `compare-alignments` console script."""
+    """Entry point for the `alignment-compare` console script."""
     args = parse_args(argv)
     sequences_a, error_a = _try_load(args.file_a)
     sequences_b, error_b = _try_load(args.file_b)
@@ -290,6 +353,18 @@ def main(argv: list[str] | None = None) -> None:
     else:
         assert sequences_a is not None
         assert sequences_b is not None
+
+        validation_errors = []
+        for sequences, label in ((sequences_a, "A"), (sequences_b, "B")):
+            try:
+                _validate_alignment(sequences, label)
+            except InvalidAlignmentError as error:
+                validation_errors.append(str(error))
+        if validation_errors:
+            for message in validation_errors:
+                print(f"error: {message}", file=sys.stderr)
+            sys.exit(1)
+
         name_a, name_b = shortest_distinguishing_labels(args.file_a, args.file_b)
         full_path_a = str(Path(args.file_a).resolve())
         full_path_b = str(Path(args.file_b).resolve())

@@ -80,7 +80,8 @@ def test_render_gap_image_plot_no_ruler_when_columns_are_compressed() -> None:
 def test_render_gap_image_plot_has_sync_scroll_hooks() -> None:
     image_data = _image_data([[1, 0]], ["a"], [0, 1])
     html = render_gap_image_plot(image_data, image_data)
-    assert html.count("data-gap-scroll>") == 2
+    # Both images of the one (unwindowed) pair share the same group key.
+    assert html.count('data-gap-scroll="chunk-0"') == 2
     assert "querySelectorAll" in html
 
 
@@ -129,3 +130,36 @@ def test_render_gap_image_plot_empty_grid_does_not_crash() -> None:
     empty_image = _image_data([], [], [])
     html = render_gap_image_plot(empty_image, empty_image)
     assert html.count("<img") == 2
+
+
+def test_render_gap_image_plot_no_window_size_is_a_single_unlabeled_pair() -> None:
+    image_data = _image_data([[1, 0, 1, 0]], ["a"], [0, 1, 2, 3])
+    html = render_gap_image_plot(image_data, image_data)
+    assert html.count("gap-image-chunk\">") == 1
+    assert "chunk 1 of" not in html
+
+
+def test_render_gap_image_plot_window_size_splits_into_chunks() -> None:
+    image_data = _image_data([[1, 0, 1, 0, 1]], ["a"], [0, 1, 2, 3, 4])
+    html = render_gap_image_plot(image_data, image_data, window_size=2)
+
+    # ceil(5 / 2) = 3 chunks, each with its own A+B pair and scroll group.
+    assert html.count('class="gap-image-chunk"') == 3
+    for i in range(3):
+        assert html.count(f'data-gap-scroll="chunk-{i}"') == 2
+    assert "(chunk 1 of 3)" in html
+    assert "(chunk 3 of 3)" in html
+    assert "2 of 5 columns shown" in html  # first two (full) chunks
+    assert "1 of 5 columns shown" in html  # final, partial chunk
+
+
+def test_render_gap_image_plot_window_size_pairs_uneven_widths() -> None:
+    # A has 5 shown columns (3 chunks of size 2), B only 2 (1 chunk) --
+    # B should get an empty placeholder for A's later chunks rather
+    # than crashing or dropping A's data.
+    image_a = _image_data([[1, 0, 1, 0, 1]], ["a"], [0, 1, 2, 3, 4])
+    image_b = _image_data([[1, 0]], ["a"], [0, 1])
+    html = render_gap_image_plot(image_a, image_b, window_size=2)
+
+    assert html.count('class="gap-image-chunk"') == 3
+    assert "0 of 2 columns shown" in html  # B's placeholder chunks

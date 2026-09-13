@@ -15,7 +15,7 @@ dependencies = [
 
 [project.scripts]
 alignment-check = "alignment_check.cli.alignment_check:main"
-compare-alignments = "alignment_check.cli.compare_alignments:main"
+alignment-compare = "alignment_check.cli.alignment_compare:main"
 
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning"]
